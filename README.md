@@ -9,3 +9,6 @@ Inferring skip patterns from Spotify’s soundtrack recommendation (Data Source:
 
 ## Model Params
 ![](https://github.com/ravitashaw/spotify-skip-prediction-inference/blob/master/report/results.png)
+
+## Citations
+DataSource: https://www.aicrowd.com/challenges/spotify-sequential-skip-prediction-challenge
