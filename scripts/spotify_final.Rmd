@@ -1,0 +1,306 @@
+---
+title: "spot_final"
+author: "Ravitashaw Bathla"
+date: "12/4/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+# Loading required libraries
+knitr::opts_chunk$set(echo = TRUE)
+#knitr::opts_chunk$set(out.height='150px', dpi=200, warning=FALSE)
+library(knitr)
+library(dplyr)
+library(ggplot2)
+library(lattice)
+library(rms)
+library(gridExtra)
+library(xtable)
+library(arm)
+library(pROC)
+library(e1071)
+library(caret)
+library(lme4)
+library(rlist)
+library(sjPlot)
+library(broom)
+library(corrplot)
+library(data.table)
+```
+
+* * *
+```{r data, include = FALSE}
+# Loading data
+getwd()
+spot <- read.csv("final_agg_50_r_yr.csv", header= T)
+spot <- spot[ -c(1) ]
+```
+
+```{r}
+# Data Preparation and Factorization
+colnames(spot)[which(names(spot) == "hist_user_behavior_is_shuffle")] <- "shuffle"
+spot['odds']=spot['skipped_count']/spot['total_count']
+spot$premium <- as.factor(spot$premium)
+spot$shuffle <- as.factor(spot$hist_user_behavior_is_shuffle)
+spot$context_type <- as.factor(spot$context_type)
+spot$release_year_tr <- as.factor(spot$release_year_tr)
+spot$release_year_tr <-  relevel(spot$release_year_tr, ref='70s')
+#editorial_playlist=0, user_collection=1, radio=2,personalized_playlist=3, catalog=4, charts=5
+
+# Mean Centering all continous variables
+spot$us_popularity_estimate = spot$us_popularity_estimate - mean(spot$us_popularity_estimate)
+spot$acousticness = spot$acousticness - mean(spot$acousticness)
+spot$instrumentalness = spot$instrumentalness - mean(spot$instrumentalness)
+spot$flatness = spot$flatness - mean(spot$flatness)
+spot$mechanism = spot$mechanism - mean(spot$mechanism)
+spot$organism = spot$organism - mean(spot$organism)
+spot$speechiness = spot$speechiness - mean(spot$speechiness)
+spot$danceability = spot$danceability - mean(spot$danceability)
+spot$liveness = spot$liveness - mean(spot$liveness)
+spot$bounciness = spot$bounciness - mean(spot$bounciness)
+spot$duration = spot$duration - mean(spot$duration)
+spot$loudness = spot$loudness - mean(spot$loudness)
+spot$valence = spot$valence - mean(spot$valence)
+```
+
+```{r}
+# Creating training and testing data based upon unique soundtracks
+sample_tracks <- sample(unique(spot$track_id), 228909, replace=F)
+train_data <- spot[is.element(spot$track_id, sample_tracks),]
+test_data <- spot[!is.element(spot$track_id, sample_tracks),]
+train_data$release_year_tr <-  relevel(train_data$release_year_tr, ref='70s') 
+test_data$release_year_tr <-  relevel(test_data$release_year_tr, ref='70s') 
+```
+
+
+```{r}
+#Model Building
+#inital model
+m1 <- glm(formula = cbind(skipped_count, not_skipped_count) ~ premium + release_year_tr +
+    shuffle + context_type + duration + context_type*shuffle + premium*shuffle + us_popularity_estimate + acousticness + instrumentalness + flatness + mechanism + organism  + speechiness + danceability + liveness + bounciness, family = binomial(link = "logit"), data = train_data)
+
+predicted_odds <- predict(m1, type="response")
+skipped_predicted_count <- ceiling(predicted_odds*train_data$total_count)
+
+results = cbind(train_data$skipped_count, skipped_predicted_count)
+results = data.table(results)
+
+colnames(results)=c("total_count","predicted_skipped_count")
+results = data.table(results)
+
+misclassified = results[,1] - results[,2]
+names(misclassified) = c('diff')
+total_users_count = sum(train_data$total_count)
+skipped_actual_user_count = sum(train_data$skipped_count)
+
+FP = sum(misclassified[misclassified$diff > 0])
+FN = abs(sum(misclassified[misclassified$diff < 0]))
+TP = skipped_actual_user_count - FN
+TN = (total_users_count - skipped_actual_user_count) - FP
+
+Accuracy = (TP+TN)/(TP+TN+FP+FN)
+Precision = TP/(TP+FP)
+specificity = TN/(TN+FN)
+
+conf_mat = c(c(TP, FP),
+             c(FN, TN))
+```
+
+
+```{r}
+#Model without song metadata
+m2 <- glm(formula = cbind(skipped_count, not_skipped_count) ~ premium + release_year_tr +
+    shuffle + context_type + context_type*shuffle + premium*shuffle + us_popularity_estimate , family = binomial(link = "logit"), data = train_data)
+
+predicted_odds2 <- predict(m2, type="response")
+skipped_predicted_count2 <- ceiling(predicted_odds2*train_data$total_count)
+
+results2 = cbind(train_data$skipped_count, skipped_predicted_count2)
+results2 = data.table(results2)
+
+colnames(results2)=c("total_count","predicted_skipped_count")
+results2 = data.table(results2)
+
+misclassified2 = results2[,1] - results2[,2]
+names(misclassified2) = c('diff')
+total_users_count = sum(train_data$total_count)
+skipped_actual_user_count = sum(train_data$skipped_count)
+
+FP2 = sum(misclassified2[misclassified2$diff > 0])
+FN2 = abs(sum(misclassified2[misclassified2$diff < 0]))
+TP2 = skipped_actual_user_count - FN2
+TN2 = (total_users_count - skipped_actual_user_count) - FP2
+
+Accuracy2 = (TP2+TN2)/(TP2+TN2+FP2+FN2)
+Precision2 = TP2/(TP2+FP2)
+specificity2 = TN2/(TN2+FN2)
+
+conf_mat2 = c(c(TP2, FP2),
+             c(FN2, TN2))
+```
+
+```{r}
+#Model Building with only song metadata
+m4 <- glm(formula = cbind(skipped_count, not_skipped_count) ~ shuffle + flatness + mechanism + organism  + speechiness + danceability + liveness + bounciness, family = binomial(link = "logit"), data = train_data)
+
+predicted_odds4 <- predict(m4, type="response")
+skipped_predicted_count4 <- ceiling(predicted_odds4*train_data$total_count)
+
+results4 = cbind(train_data$skipped_count, skipped_predicted_count4)
+results4 = data.table(results4)
+
+colnames(results4)=c("total_count","predicted_skipped_count")
+results4 = data.table(results4)
+
+misclassified4 = results4[,1] - results4[,2]
+names(misclassified4) = c('diff')
+
+FP4 = sum(misclassified4[misclassified4$diff > 0])
+FN4 = abs(sum(misclassified4[misclassified4$diff < 0]))
+TP4 = skipped_actual_user_count - FN4
+TN4 = (total_users_count - skipped_actual_user_count) - FP4
+
+Accuracy4 = (TP4+TN4)/(TP4+TN4+FP4+FN4)
+Precision4 = TP4/(TP4+FP4)
+specificity4 = TN4/(TN4+FN4)
+
+conf_mat4 = c(c(TP4, FP4),
+             c(FN4, TN4))
+```
+
+
+```{r}
+#Model Building with song metadata interaction and playlist types
+m0005 <- glm(formula = cbind(skipped_count, not_skipped_count) ~ premium + release_year_tr +
+    shuffle + context_type + context_type*shuffle + premium*shuffle + us_popularity_estimate + flatness + mechanism + organism  + speechiness + danceability + liveness + bounciness, family = binomial(link = "logit"), data = train_data)
+
+predicted_odds0005 <- predict(m0005, type="response")
+skipped_predicted_count0005 <- ceiling(predicted_odds0005*train_data$total_count)
+
+results0005 = cbind(train_data$skipped_count, skipped_predicted_count0005)
+results0005 = data.table(results0005)
+
+total_users_count0005 = sum(train_data$total_count)
+skipped_actual_user_count0005 = sum(train_data$skipped_count)
+
+colnames(results0005)=c("total_count","predicted_skipped_count")
+results0005 = data.table(results0005)
+
+misclassified0005 = results0005[,1] - results0005[,2]
+names(misclassified0005) = c('diff')
+
+FP0005 = sum(misclassified0005[misclassified0005$diff > 0])
+FN0005 = abs(sum(misclassified0005[misclassified0005$diff < 0]))
+TP0005 = skipped_actual_user_count0005 - FN0005
+TN0005 = (total_users_count0005 - skipped_actual_user_count0005) - FP0005
+
+Accuracy0005 = (TP0005+TN0005)/(TP0005+TN0005+FP0005+FN0005)
+Precision0005 = TP0005/(TP0005+FP0005)
+specificity0005 = TN0005/(TN0005+FN0005)
+
+conf_mat0005 = c(c(TP0005, FP0005),
+             c(FN0005, TN0005))
+```
+
+```{r}
+#Model Building with few song metadata removed (liveness + bounciness)
+m0006 <- glm(formula = cbind(skipped_count, not_skipped_count) ~ premium + release_year_tr +
+    shuffle + context_type + us_popularity_estimate + flatness + mechanism + organism  + speechiness + danceability, family = binomial(link = "logit"), data = train_data)
+
+predicted_odds0006 <- predict(m0006, type="response")
+skipped_predicted_count0006 <- ceiling(predicted_odds0006*train_data$total_count)
+
+results0006 = cbind(train_data$skipped_count, skipped_predicted_count0006)
+results0006 = data.table(results0006)
+
+total_users_count0006 = sum(train_data$total_count)
+skipped_actual_user_count0006 = sum(train_data$skipped_count)
+
+colnames(results0006)=c("total_count","predicted_skipped_count")
+results0006 = data.table(results0006)
+
+misclassified0006 = results0006[,1] - results0006[,2]
+names(misclassified0006) = c('diff')
+
+FP0006 = sum(misclassified0006[misclassified0006$diff > 0])
+FN0006 = abs(sum(misclassified0006[misclassified0006$diff < 0]))
+TP0006 = skipped_actual_user_count0006 - FN0006
+TN0006 = (total_users_count0006 - skipped_actual_user_count0006) - FP0006
+
+Accuracy0006 = (TP0006+TN0006)/(TP0006+TN0006+FP0006+FN0006)
+Precision0006 = TP0006/(TP0006+FP0006)
+specificity0006 = TN0006/(TN0006+FN0006)
+
+conf_mat0006 = c(c(TP0006, FP0006),
+             c(FN0006, TN0006))
+```
+
+```{r}
+#Model Building after removing variables which are highly correlated
+m00016 <- glm(formula = cbind(skipped_count, not_skipped_count) ~ premium + release_year_tr +
+    shuffle + context_type + us_popularity_estimate + duration +  context_type*shuffle + premium*shuffle +
+    acousticness + instrumentalness + flatness + loudness + mechanism   + speechiness  + liveness + valence, family = binomial(link = "logit"), data = train_data)
+
+predicted_odds00016 <- predict(m00016,type="response")
+skipped_predicted_count00016 <- ceiling(predicted_odds00016*train_data$total_count)
+
+results00016 = cbind(train_data$skipped_count, skipped_predicted_count00016)
+results00016 = data.table(results00016)
+
+total_users_count00016 = sum(train_data$total_count)
+skipped_actual_user_count00016 = sum(train_data$skipped_count)
+
+colnames(results00016)=c("skipped_count","predicted_skipped_count")
+results00016 = data.table(results00016)
+
+misclassified00016 = results00016[,1] - results00016[,2]
+names(misclassified00016) = c('diff')
+
+FP00016 = sum(misclassified00016[misclassified00016$diff > 0])
+FN00016 = abs(sum(misclassified00016[misclassified00016$diff < 0]))
+TP00016 = skipped_actual_user_count00016 - FN00016
+TN00016 = (total_users_count00016 - skipped_actual_user_count00016) - FP00016
+
+Accuracy00016 = (TP00016+TN00016)/(TP00016+TN00016+FP00016+FN00016)
+Precision00016 = TP00016/(TP00016+FP00016)
+specificity00016 = TN00016/(TN00016+FN00016)
+sensitivity00016 = TP00016/(TP00016+FN00016)
+
+conf_mat00016 = c(c(TP00016, FP00016),
+             c(FN00016, TN00016))
+```
+
+
+```{r}
+predicted_odds00016_test <- predict(m00016, newdata=test_data,type="response")
+pred_test <- data.table(predicted_odds00016_test)
+skipped_predicted_count00016_test <- ceiling(predicted_odds00016_test*test_data$total_count)
+
+results00016_test = cbind(test_data$skipped_count, skipped_predicted_count00016_test)
+results00016_test = data.table(results00016_test)
+
+total_users_count00016_test = sum(test_data$total_count)
+skipped_actual_user_count00016_test = sum(test_data$skipped_count)
+
+colnames(results00016_test)=c("skipped_count","predicted_skipped_count")
+results00016_test = data.table(results00016_test)
+
+misclassified00016_test = results00016_test[,1] - results00016_test[,2]
+names(misclassified00016_test) = c('diff')
+
+FP00016_test = sum(misclassified00016_test[misclassified00016_test$diff > 0])
+FN00016_test = abs(sum(misclassified00016_test[misclassified00016_test$diff < 0]))
+TP00016_test = skipped_actual_user_count00016_test - FN00016_test
+TN00016_test = (total_users_count00016_test - skipped_actual_user_count00016_test) - FP00016_test
+
+Accuracy00016_test = (TP00016_test+TN00016_test)/(TP00016_test+TN00016_test+FP00016_test+FN00016_test)
+Precision00016_test = TP00016_test/(TP00016_test+FP00016_test)
+specificity00016_test = TN00016_test/(TN00016_test+FN00016_test)
+sensitivity00016_test = TP00016_test/(TP00016_test+FN00016_test)
+conf_mat00016_test = c(c(TP00016_test, FP00016_test),
+             c(FN00016_test, TN00016_test))
+```
+
+
+$$logit(Pr[skip_i=1]) = \beta_0 + \beta_{1} {Premium_i}  + \beta_{2} {Shuffle_i} + \beta_{3} {ReleaseYears[1980s,1990s,2000s,2010s]} \\ + \beta_{4} {PlaylistType[Editorial, User, Radio, Personalized, Catalog, Charts]_i} + \beta_{5} {USPopularity_i} \\ + \beta_{6}{Acousticness_i} + \beta_{7}{Instrumentalness_i} + \beta_{8}{Flatness_i} + \beta_{9}{Loudness_i} + \beta_{10}{Mechanism}  \\ + \beta_{11}{Speechiness_i}  + \beta_{12}{Liveness} + \beta_{13}{Valence_i} + \beta_{14} {PlaylistType_i:Shuffle_i} + \beta_{15} {Premium_i:Shuffle_i} + \epsilon_{i} \\ \epsilon_{i} \sim N(0,\sigma^2)$$
+
